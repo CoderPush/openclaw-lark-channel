@@ -157,6 +157,20 @@ async function processInboundQueue(
     try {
       console.log(`[INBOUND] Processing #${msg.id} | attempt ${msg.retries + 1}`);
 
+      // Parse attachments (images) if present
+      const attachments = msg.attachments_json ? JSON.parse(msg.attachments_json) as Array<{ mimeType: string; content: string }> : [];
+      
+      // Convert to format expected by agent: { type: 'image', data: base64, mimeType }
+      const images = attachments.map(att => ({
+        type: 'image' as const,
+        data: att.content,
+        mimeType: att.mimeType,
+      }));
+
+      if (images.length > 0) {
+        console.log(`[INBOUND] Message has ${images.length} image(s)`);
+      }
+
       // Get the plugin runtime with dispatch system
       const pluginRuntime = getLarkRuntime();
       const cfg = pluginRuntime.config.loadConfig() as Record<string, unknown>;
@@ -238,6 +252,7 @@ async function processInboundQueue(
         },
         replyOptions: {
           disableBlockStreaming: true,
+          images: images.length > 0 ? images : undefined,
         },
       });
 

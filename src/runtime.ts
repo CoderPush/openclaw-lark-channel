@@ -33,6 +33,7 @@ export interface LarkPluginRuntime {
           onReasoningStream?: (payload: { text?: string }) => void;
           disableBlockStreaming?: boolean;
           onModelSelected?: (ctx: { provider: string; model: string; thinkLevel?: string }) => void;
+          images?: Array<{ type: 'image'; data: string; mimeType: string }>;
         };
       }) => Promise<{ queuedFinal?: boolean }>;
       finalizeInboundContext: (ctx: Record<string, unknown>) => Record<string, unknown>;
