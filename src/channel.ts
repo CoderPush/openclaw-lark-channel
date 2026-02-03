@@ -141,6 +141,87 @@ let outboundInterval: NodeJS.Timeout | null = null;
 // This ensures session info, usage footer, reasoning blocks all work correctly.
 // The WebSocket agent method bypasses the dispatch system which is why it was broken.
 
+// ─── Large Attachment Support ────────────────────────────────────
+// Support for large attachments up to 200MB as per Boyang's requirement
+const MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024; // 200 MB
+
+/**
+ * Parse and validate attachments, converting to the format expected by OpenClaw.
+ * Handles large files up to 200MB.
+ */
+function parseAttachmentsForAgent(
+  attachmentsJson: string | null,
+  log: { info: (msg: string) => void; warn?: (msg: string) => void } = { info: console.log, warn: console.warn }
+): Array<{ type: 'image'; data: string; mimeType: string }> {
+  if (!attachmentsJson) return [];
+
+  let attachments: Array<{ mimeType: string; content: string }>;
+  try {
+    attachments = JSON.parse(attachmentsJson);
+  } catch (e) {
+    log.warn?.(`[ATTACHMENT] Failed to parse attachments JSON: ${(e as Error).message}`);
+    return [];
+  }
+
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return [];
+  }
+
+  const images: Array<{ type: 'image'; data: string; mimeType: string }> = [];
+
+  for (const [idx, att] of attachments.entries()) {
+    if (!att || typeof att.content !== 'string') {
+      log.warn?.(`[ATTACHMENT] Skipping attachment ${idx + 1}: invalid content`);
+      continue;
+    }
+
+    const mime = (att.mimeType ?? '').toLowerCase();
+    let b64 = att.content.trim();
+
+    // Strip data URL prefix if present
+    const dataUrlMatch = /^data:[^;]+;base64,(.*)$/.exec(b64);
+    if (dataUrlMatch) {
+      b64 = dataUrlMatch[1];
+    }
+
+    // Basic base64 validation
+    if (b64.length % 4 !== 0) {
+      log.warn?.(`[ATTACHMENT] Skipping attachment ${idx + 1}: invalid base64 (length not multiple of 4)`);
+      continue;
+    }
+
+    // Check size
+    let sizeBytes: number;
+    try {
+      sizeBytes = Buffer.from(b64, 'base64').byteLength;
+    } catch {
+      log.warn?.(`[ATTACHMENT] Skipping attachment ${idx + 1}: failed to decode base64`);
+      continue;
+    }
+
+    if (sizeBytes > MAX_ATTACHMENT_BYTES) {
+      log.warn?.(`[ATTACHMENT] Skipping attachment ${idx + 1}: exceeds 200MB limit (${Math.round(sizeBytes / 1024 / 1024)}MB)`);
+      continue;
+    }
+
+    // Check if it's an image
+    if (!mime.startsWith('image/')) {
+      log.warn?.(`[ATTACHMENT] Skipping attachment ${idx + 1}: not an image (${mime})`);
+      continue;
+    }
+
+    log.info(`[ATTACHMENT] Accepted image ${idx + 1}: ${mime}, ${Math.round(sizeBytes / 1024)}KB`);
+    
+    images.push({
+      type: 'image' as const,
+      data: b64,
+      mimeType: mime,
+    });
+  }
+
+  return images;
+}
+
 async function processInboundQueue(
   queue: MessageQueue,
   _gatewayToken: string,
@@ -157,18 +238,11 @@ async function processInboundQueue(
     try {
       console.log(`[INBOUND] Processing #${msg.id} | attempt ${msg.retries + 1}`);
 
-      // Parse attachments (images) if present
-      const attachments = msg.attachments_json ? JSON.parse(msg.attachments_json) as Array<{ mimeType: string; content: string }> : [];
-      
-      // Convert to format expected by agent: { type: 'image', data: base64, mimeType }
-      const images = attachments.map(att => ({
-        type: 'image' as const,
-        data: att.content,
-        mimeType: att.mimeType,
-      }));
+      // Parse attachments (images) with proper validation and large file support
+      const images = parseAttachmentsForAgent(msg.attachments_json);
 
       if (images.length > 0) {
-        console.log(`[INBOUND] Message has ${images.length} image(s)`);
+        console.log(`[INBOUND] Message has ${images.length} validated image(s)`);
       }
 
       // Get the plugin runtime with dispatch system
@@ -230,36 +304,100 @@ async function processInboundQueue(
       // Get the Lark client for delivery
       const client = getLarkClient();
 
+      console.log(`[INBOUND] Starting dispatch for message: "${msg.message_text.substring(0, 50)}..." | images: ${images.length}`);
+      console.log(`[INBOUND] Context: SessionKey=${route.sessionKey}, ChatId=${msg.chat_id}, Surface=${ctx.Surface}, OriginatingChannel=${ctx.OriginatingChannel}`);
+      
+      // Write debug to file
+      const fs = require('fs');
+      const debugLog = (line: string) => {
+        const ts = new Date().toISOString();
+        fs.appendFileSync('/tmp/lark-dispatch.log', `${ts} ${line}\n`);
+      };
+      debugLog(`=== Processing message #${msg.id}: "${msg.message_text.substring(0, 50)}..."`);
+      debugLog(`Context: SessionKey=${route.sessionKey}, Surface=${ctx.Surface}, OriginatingChannel=${ctx.OriginatingChannel}`);
+
       // Use the dispatch system - SAME AS TELEGRAM
-      await pluginRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      // Add a timeout to prevent hanging indefinitely
+      const DISPATCH_TIMEOUT_MS = 300_000; // 5 minutes
+      
+      let deliverCallCount = 0;
+      let lastDeliveryKind = '';
+      
+      const dispatchPromise = pluginRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx,
         cfg,
         dispatcherOptions: {
           deliver: async (payload, info) => {
-            if (info.kind !== 'final') return;
+            deliverCallCount++;
+            lastDeliveryKind = info.kind;
+            debugLog(`deliver() called #${deliverCallCount}: kind=${info.kind}, hasText=${!!payload.text}, textLen=${payload.text?.length ?? 0}`);
+            console.log(`[DISPATCH] deliver() called #${deliverCallCount}: kind=${info.kind}, hasText=${!!payload.text}, textLen=${payload.text?.length ?? 0}, hasMedia=${!!payload.mediaUrl}`);
             
+            // Process ALL kinds now for debugging
             const text = payload.text?.trim();
-            if (!text) return;
+            if (!text) {
+              debugLog(`Skipping empty payload for kind=${info.kind}`);
+              console.log(`[DISPATCH] Skipping empty payload for kind=${info.kind}`);
+              return;
+            }
 
-            console.log(`[DISPATCH] Delivering ${info.kind}: ${text.length} chars`);
+            debugLog(`Delivering ${info.kind}: ${text.length} chars to ${msg.chat_id}`);
+            console.log(`[DISPATCH] Delivering ${info.kind}: ${text.length} chars to ${msg.chat_id}`);
             
             // Send to Lark
             await sendToLark(client, msg.chat_id, text, route.sessionKey);
+            debugLog(`✅ Sent ${info.kind} to Lark`);
+            console.log(`[DISPATCH] ✅ Sent ${info.kind} to Lark`);
           },
           onError: (err, info) => {
-            console.error(`[DISPATCH] ${info.kind} error:`, err.message);
+            debugLog(`ERROR ${info.kind}: ${(err as Error).message}`);
+            console.error(`[DISPATCH] ${info.kind} error:`, (err as Error).message);
+            // Log stack trace for debugging
+            if ((err as Error).stack) {
+              debugLog(`Stack: ${(err as Error).stack}`);
+              console.error(`[DISPATCH] Stack:`, (err as Error).stack);
+            }
+          },
+          onSkip: (_payload, info) => {
+            debugLog(`onSkip: reason=${info.reason}`);
+            console.log(`[DISPATCH] onSkip: reason=${info.reason}`);
+          },
+          onReplyStart: () => {
+            debugLog(`onReplyStart called`);
+            console.log(`[DISPATCH] onReplyStart called`);
           },
         },
         replyOptions: {
-          disableBlockStreaming: true,
+          // Enable block streaming for verbose mode (tool calls, thinking, etc.)
+          disableBlockStreaming: false,
           images: images.length > 0 ? images : undefined,
         },
       });
 
+      // Add timeout to prevent getting stuck
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Dispatch timeout after 5 minutes')), DISPATCH_TIMEOUT_MS);
+      });
+
+      const dispatchResult = await Promise.race([dispatchPromise, timeoutPromise]);
+
+      debugLog(`✅ Completed #${msg.id} | deliverCalls=${deliverCallCount} | lastKind=${lastDeliveryKind} | dispatchResult=${JSON.stringify(dispatchResult)}`);
+      console.log(`[INBOUND] ✅ Completed #${msg.id} | deliverCalls=${deliverCallCount} | lastKind=${lastDeliveryKind} | dispatchResult=${JSON.stringify(dispatchResult)}`);
       queue.markInboundCompleted(msg.id, 'delivered');
     } catch (err) {
-      console.error(`[INBOUND] Failed #${msg.id}:`, (err as Error).message);
-      queue.markInboundRetry(msg.id, (err as Error).message);
+      const error = err as Error;
+      // Log to file in catch too
+      const fs = require('fs');
+      const ts = new Date().toISOString();
+      fs.appendFileSync('/tmp/lark-dispatch.log', `${ts} ❌ Failed #${msg.id}: ${error.message}\n`);
+      if (error.stack) {
+        fs.appendFileSync('/tmp/lark-dispatch.log', `${ts} Stack: ${error.stack}\n`);
+      }
+      console.error(`[INBOUND] ❌ Failed #${msg.id}:`, error.message);
+      if (error.stack) {
+        console.error(`[INBOUND] Stack:`, error.stack);
+      }
+      queue.markInboundRetry(msg.id, error.message);
     }
   }
 }

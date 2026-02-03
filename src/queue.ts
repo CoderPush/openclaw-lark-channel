@@ -81,6 +81,7 @@ export class MessageQueue {
     this.db.pragma('synchronous = NORMAL');
 
     this.initializeSchema();
+    this.resetStuckMessages();
 
     // Initialize prepared statements
     this.stmtEnqueueOutbound = this.db.prepare(`
@@ -217,6 +218,36 @@ export class MessageQueue {
       
       CREATE INDEX IF NOT EXISTS idx_sent_hash ON sent_messages(content_hash, chat_id, created_at);
     `);
+  }
+
+  /**
+   * Reset any messages that were in 'processing' state when the service stopped.
+   * This prevents messages from getting stuck after a restart.
+   */
+  private resetStuckMessages(): void {
+    const now = Date.now();
+    
+    // Reset inbound messages stuck in processing
+    const inboundReset = this.db.prepare(`
+      UPDATE inbound_queue 
+      SET status = 'pending', retries = retries, updated_at = ?
+      WHERE status = 'processing'
+    `).run(now);
+    
+    if (inboundReset.changes > 0) {
+      console.log(`[QUEUE] ⚠️ Reset ${inboundReset.changes} stuck inbound message(s) to pending`);
+    }
+    
+    // Reset outbound messages stuck in processing
+    const outboundReset = this.db.prepare(`
+      UPDATE outbound_queue 
+      SET status = 'pending', retries = retries, updated_at = ?
+      WHERE status = 'processing'
+    `).run(now);
+    
+    if (outboundReset.changes > 0) {
+      console.log(`[QUEUE] ⚠️ Reset ${outboundReset.changes} stuck outbound message(s) to pending`);
+    }
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────
