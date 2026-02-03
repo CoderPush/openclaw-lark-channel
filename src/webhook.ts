@@ -273,8 +273,14 @@ export class WebhookHandler {
       return;
     }
 
-    // Only accept POST to /webhook
-    if (req.method !== 'POST' || !req.url?.startsWith('/webhook')) {
+    // Card callback endpoint (separate from message events)
+    if (req.method === 'POST' && req.url === '/webhook/card') {
+      await this.handleCardRequest(req, res);
+      return;
+    }
+
+    // Only accept POST to /webhook for message events
+    if (req.method !== 'POST' || req.url !== '/webhook') {
       res.writeHead(404);
       res.end('Not found');
       return;
@@ -313,19 +319,7 @@ export class WebhookHandler {
       return;
     }
 
-    // Handle card action callbacks (synchronous - need to respond with card update)
-    if (
-      data.schema === '2.0' &&
-      data.header?.event_type === 'card.action.trigger' &&
-      data.event
-    ) {
-      const cardResponse = await this.handleCardCallback(data.event);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(cardResponse));
-      return;
-    }
-
-    // Respond immediately (async processing)
+    // Respond immediately (async processing) for message events
     res.writeHead(200);
     res.end('ok');
 
@@ -340,20 +334,70 @@ export class WebhookHandler {
   }
 
   /**
+   * Handle card callback HTTP request (separate endpoint: /webhook/card)
+   * This is configured as "Message Card Request URL" in Lark Open Platform
+   */
+  private async handleCardRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse
+  ): Promise<void> {
+    // Read body
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(chunk as Buffer);
+    }
+
+    let data: any;
+    try {
+      data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Bad JSON' }));
+      return;
+    }
+
+    // Handle encryption if needed
+    if (data.encrypt && this.config.encryptKey) {
+      try {
+        data = decryptPayload(data.encrypt, this.config.encryptKey);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Decrypt fail' }));
+        return;
+      }
+    }
+
+    // URL verification challenge (cards also need this)
+    if (data.type === 'url_verification' && data.challenge) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ challenge: data.challenge }));
+      return;
+    }
+
+    // Process card callback and return response
+    const cardResponse = await this.handleCardCallback(data);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(cardResponse));
+  }
+
+  /**
    * Handle card action callback (button clicks, form submissions)
    * Returns card update or toast to Lark
    */
-  private async handleCardCallback(event: any): Promise<any> {
+  private async handleCardCallback(data: any): Promise<any> {
     try {
-      const operator = event.operator;
-      const action = event.action;
-      const context = event.context;
+      // Handle both direct event format and wrapped format
+      const event = data.event || data;
+      const operator = event.operator || data.open_id ? { open_id: data.open_id } : {};
+      const action = event.action || data.action || {};
+      const context = event.context || {};
 
-      const userId = operator?.open_id;
-      const chatId = context?.open_chat_id;
-      const messageId = context?.open_message_id;
+      const userId = operator?.open_id || data.user_id;
+      const chatId = context?.open_chat_id || data.open_chat_id;
+      const messageId = context?.open_message_id || data.open_message_id;
 
-      console.log(`[WEBHOOK] Card callback: user=${userId}, chat=${chatId}, action=`, action);
+      console.log(`[WEBHOOK-CARD] Callback: user=${userId}, chat=${chatId}`);
+      console.log(`[WEBHOOK-CARD] Action:`, JSON.stringify(action, null, 2));
 
       // Extract action info
       const actionValue = action?.value || {};
