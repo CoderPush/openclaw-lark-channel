@@ -130,7 +130,7 @@ const larkChannelMeta = {
   docsPath: '/channels/lark',
   blurb: 'Connect to Lark (Feishu) messaging platform',
   order: 15,
-  aliases: ['feishu'],
+  // aliases: ['feishu'], // Removed to avoid conflict with official @openclaw/feishu plugin
   quickstartAllowFrom: true,
 };
 
@@ -321,8 +321,22 @@ async function processInboundQueue(
       const images = allAttachments.filter((a): a is { type: 'image'; data: string; mimeType: string } => a.type === 'image');
       const files = allAttachments.filter((a): a is { type: 'file'; path: string; mimeType: string; fileName?: string } => a.type === 'file');
 
+      // ⚡ FIX: Extract image paths from raw attachments for MediaPath/MediaPaths
+      // The media understanding system needs file paths, not just base64 data
+      let imagePaths: { path: string; mimeType: string }[] = [];
+      if (msg.attachments_json) {
+        try {
+          const rawAttachments = JSON.parse(msg.attachments_json) as Array<{ type?: string; path?: string; mimeType?: string }>;
+          imagePaths = rawAttachments
+            .filter(a => a.type === 'image' && a.path)
+            .map(a => ({ path: a.path!, mimeType: a.mimeType ?? 'image/jpeg' }));
+        } catch {
+          // Ignore parse errors - already logged by parseAttachmentsForAgent
+        }
+      }
+
       if (images.length > 0) {
-        console.log(`[INBOUND] Message has ${images.length} image(s)`);
+        console.log(`[INBOUND] Message has ${images.length} image(s), ${imagePaths.length} with disk paths`);
       }
       if (files.length > 0) {
         console.log(`[INBOUND] Message has ${files.length} file(s): ${files.map(f => f.fileName || path.basename(f.path)).join(', ')}`);
@@ -384,11 +398,16 @@ async function processInboundQueue(
         MessageSid: msg.message_id,
         SenderId: msg.chat_id,
         From: msg.chat_id,
-        // File attachments - passed via MediaPath like Telegram does
-        // This allows agent to access files via read tool
-        MediaPath: files.length > 0 ? files[0].path : undefined,
-        MediaPaths: files.length > 0 ? files.map(f => f.path) : undefined,
-        MediaTypes: files.length > 0 ? files.map(f => f.mimeType) : undefined,
+        // ⚡ CRITICAL: Include both images AND files in MediaPath/MediaPaths
+        // This enables the media understanding system to process images with vision models
+        // Images are saved to disk by the webhook handler and paths are stored in attachments
+        MediaPath: imagePaths.length > 0 ? imagePaths[0].path : (files.length > 0 ? files[0].path : undefined),
+        MediaPaths: [...imagePaths.map(i => i.path), ...files.map(f => f.path)].length > 0 
+          ? [...imagePaths.map(i => i.path), ...files.map(f => f.path)] 
+          : undefined,
+        MediaTypes: [...imagePaths.map(i => i.mimeType), ...files.map(f => f.mimeType)].length > 0
+          ? [...imagePaths.map(i => i.mimeType), ...files.map(f => f.mimeType)]
+          : undefined,
       });
 
       // Record session metadata
@@ -742,14 +761,26 @@ export const larkPlugin = {
   messaging: {
     normalizeTarget: (target: string) => {
       const trimmed = target.trim();
-      if (/^oc_[a-f0-9]+$/i.test(trimmed)) {
-        return trimmed;
+      // Strip user: or channel: prefix if present (for session key kind detection)
+      const withoutKind = trimmed.replace(/^(user|channel):/i, '');
+      // Also strip lark:/feishu: prefix
+      const normalized = withoutKind.replace(/^(lark|feishu):/i, '');
+      if (/^o[cg]_[a-f0-9]+$/i.test(normalized)) {
+        return normalized;
       }
-      return trimmed.replace(/^(lark|feishu):/i, '');
+      return normalized;
     },
     targetResolver: {
-      looksLikeId: (target: string) => /^oc_[a-f0-9]+$/i.test(target),
-      hint: '<chatId> (e.g., oc_abc123...)',
+      // Recognize both bare chat IDs and prefixed versions (user:oc_xxx, channel:og_xxx)
+      looksLikeId: (target: string) => {
+        const trimmed = target.trim();
+        // Direct chat ID
+        if (/^o[cg]_[a-f0-9]+$/i.test(trimmed)) return true;
+        // With user:/channel: prefix
+        if (/^(user|channel):o[cg]_[a-f0-9]+$/i.test(trimmed)) return true;
+        return false;
+      },
+      hint: '<chatId> (e.g., oc_abc123... or user:oc_abc123...)',
     },
   },
 
