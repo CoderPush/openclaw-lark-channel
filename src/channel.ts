@@ -331,6 +331,14 @@ async function processInboundQueue(
       const pluginRuntime = getLarkRuntime();
       const cfg = pluginRuntime.config.loadConfig() as Record<string, unknown>;
       
+      // ⚡ CRITICAL: Validate dmScope config to ensure correct session key routing
+      // If dmScope is not set, default to 'per-channel-peer' for proper Lark session isolation
+      const sessionConfig = cfg.session as { dmScope?: string } | undefined;
+      const dmScope = sessionConfig?.dmScope ?? 'per-channel-peer';
+      
+      // Log config state for debugging session key issues
+      console.log(`[INBOUND] Config check: dmScope=${dmScope}, hasSessionConfig=${!!sessionConfig}`);
+      
       // Derive chat type from chat_id pattern (og_ = group, oc_ = DM)
       const isGroup = msg.chat_id.startsWith('og_');
       const chatType: 'direct' | 'group' = isGroup ? 'group' : 'direct';
@@ -345,6 +353,16 @@ async function processInboundQueue(
           id: msg.chat_id,
         },
       });
+      
+      // ⚡ CRITICAL: Validate session key format
+      // Expected format for DM with per-channel-peer: agent:main:lark:dm:<chatId>
+      // If we get agent:main:main, something is wrong with config loading
+      const expectedPrefix = isGroup ? `agent:main:lark:group:` : `agent:main:lark:dm:`;
+      if (!route.sessionKey.startsWith(expectedPrefix) && !route.sessionKey.includes(':lark:')) {
+        console.warn(`[INBOUND] ⚠️ Unexpected session key format: ${route.sessionKey}`);
+        console.warn(`[INBOUND] ⚠️ Config state: dmScope=${dmScope}, isGroup=${isGroup}, chatId=${msg.chat_id}`);
+        // This indicates a config loading issue - the session key should include 'lark'
+      }
 
       // Build context like Telegram does - THIS IS THE KEY
       // Include MediaPath/MediaPaths for file attachments (following Telegram pattern)

@@ -652,10 +652,11 @@ export class WebhookHandler {
         }
       }
 
-      // Build session key
-      // Format: agent:{agentId}:{channel}:{chatId}
-      // This matches the canonical session key format expected by the gateway
-      const sessionKey = `agent:main:lark:${chatId}`;
+      // NOTE: Session key is computed by the consumer using resolveAgentRoute()
+      // We don't generate it here because the format depends on config (dmScope, identityLinks)
+      // The consumer will use chat_id to compute the correct session key at processing time
+      // This placeholder is only for queue schema compatibility
+      const sessionKey = `lark:${chatId}`;  // Placeholder - consumer ignores this
       const messageText = text || '[User sent an image]';
 
       // ⚡ PERSIST IMMEDIATELY - no message loss
