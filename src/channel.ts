@@ -391,11 +391,30 @@ async function processInboundQueue(
         // This indicates a config loading issue - the session key should include 'lark'
       }
 
+      // Fetch thread context for group thread replies
+      let bodyForAgent = msg.message_text;
+      if (isGroup && msg.thread_root_id && msg.thread_root_id !== msg.message_id) {
+        try {
+          const threadMsgs = await getLarkClient().getThreadContext(
+            msg.chat_id,
+            msg.thread_root_id,
+            msg.message_id,
+          );
+          if (threadMsgs.length > 0) {
+            const threadLines = threadMsgs.map(m => `> ${m.text}`).join('\n');
+            bodyForAgent = `[Thread context]\n${threadLines}\n\n[New message]\n${msg.message_text}`;
+            console.log(`[INBOUND] Injected ${threadMsgs.length} thread message(s) as context`);
+          }
+        } catch (e) {
+          console.warn(`[INBOUND] Thread context fetch failed:`, (e as Error).message);
+        }
+      }
+
       // Build context like Telegram does - THIS IS THE KEY
       // Include MediaPath/MediaPaths for file attachments (following Telegram pattern)
       const ctx = pluginRuntime.channel.reply.finalizeInboundContext({
         Body: msg.message_text,
-        BodyForAgent: msg.message_text,
+        BodyForAgent: bodyForAgent,
         BodyForCommands: msg.message_text,
         RawBody: msg.message_text,
         CommandBody: msg.message_text,
