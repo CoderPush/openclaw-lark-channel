@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import crypto from 'node:crypto';
-import { decryptPayload, shouldAllowDmByPolicy, shouldRespondInGroup } from '../src/webhook.js';
+import { decryptPayload, shouldAllowDmByPolicy, shouldRespondInGroup, replaceMentionMarkers } from '../src/webhook.js';
 
 describe('Webhook', () => {
   describe('decryptPayload', () => {
@@ -54,6 +54,58 @@ describe('Webhook', () => {
       expect(shouldRespondInGroup('Just chatting here', [], false)).toBe(false);
       expect(shouldRespondInGroup('Meeting at 3pm', [], false)).toBe(false);
       expect(shouldRespondInGroup('Ok sounds good', [], false)).toBe(false);
+    });
+  });
+
+  describe('replaceMentionMarkers', () => {
+    it('should replace @_user_N with display names', () => {
+      const text = 'Tech lead @_user_1 @_user_2 please review';
+      const mentions = [
+        { key: '@_user_1', name: 'Si Huynh', id: { open_id: 'ou_111' } },
+        { key: '@_user_2', name: 'Hao Doan', id: { open_id: 'ou_222' } },
+      ];
+      expect(replaceMentionMarkers(text, mentions)).toBe('Tech lead @Si Huynh @Hao Doan please review');
+    });
+
+    it('should strip bot self-mention when botOpenId provided', () => {
+      const text = '@_user_1 what is the status?';
+      const mentions = [
+        { key: '@_user_1', name: 'Pepper', id: { open_id: 'ou_bot' } },
+      ];
+      expect(replaceMentionMarkers(text, mentions, 'ou_bot')).toBe('what is the status?');
+    });
+
+    it('should preserve bot mention when botOpenId not provided', () => {
+      const text = '@_user_1 help me';
+      const mentions = [
+        { key: '@_user_1', name: 'Pepper', id: { open_id: 'ou_bot' } },
+      ];
+      expect(replaceMentionMarkers(text, mentions)).toBe('@Pepper help me');
+    });
+
+    it('should handle mixed bot and user mentions', () => {
+      const text = '@_user_1 please help @_user_2 with this';
+      const mentions = [
+        { key: '@_user_1', name: 'Pepper', id: { open_id: 'ou_bot' } },
+        { key: '@_user_2', name: 'Harley', id: { open_id: 'ou_harley' } },
+      ];
+      expect(replaceMentionMarkers(text, mentions, 'ou_bot')).toBe('please help @Harley with this');
+    });
+
+    it('should fallback to @user when name is missing', () => {
+      const text = 'Hey @_user_1 check this';
+      const mentions = [{ key: '@_user_1', id: { open_id: 'ou_111' } }];
+      expect(replaceMentionMarkers(text, mentions)).toBe('Hey @user check this');
+    });
+
+    it('should preserve punctuation after mention', () => {
+      const text = 'Hi @_user_1, how are you?';
+      const mentions = [{ key: '@_user_1', name: 'Alice', id: { open_id: 'ou_111' } }];
+      expect(replaceMentionMarkers(text, mentions)).toBe('Hi @Alice, how are you?');
+    });
+
+    it('should return text unchanged when no mentions', () => {
+      expect(replaceMentionMarkers('Hello world', [])).toBe('Hello world');
     });
   });
 
