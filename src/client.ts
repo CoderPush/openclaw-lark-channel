@@ -500,7 +500,7 @@ export class LarkClient {
    * Returns messages in chronological order, excluding the current message.
    */
   async getThreadContext(
-    chatId: string,
+    _chatId: string,
     threadRootId: string,
     currentMessageId: string,
     maxReplies = 10,
@@ -517,39 +517,37 @@ export class LarkClient {
         }
       }
 
-      // 2. List recent messages in the chat and filter for this thread
-      const res = await this.sdk.im.v1.message.list({
-        params: {
-          container_id_type: 'chat',
-          container_id: chatId,
-          page_size: 50,
-          sort_type: 'ByCreateTimeAsc',
-        },
-      }) as { data?: { items?: Array<{
-        message_id?: string;
-        root_id?: string;
-        msg_type?: string;
-        body?: { content?: string };
-        sender?: { id?: string };
-        create_time?: string;
-      }> } };
+      // 2. Fetch thread replies via the dedicated /replies endpoint
+      const token = await this.getTenantToken();
+      if (token) {
+        const domain = this.domain === 'feishu'
+          ? 'https://open.feishu.cn'
+          : 'https://open.larksuite.com';
+        const url = `${domain}/open-apis/im/v1/messages/${threadRootId}/replies?page_size=50`;
+        const res = await fetch(url, {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
 
-      const items = res?.data?.items ?? [];
+        if (res.ok) {
+          const data = await res.json() as { data?: { items?: Array<{
+            message_id?: string;
+            msg_type?: string;
+            body?: { content?: string };
+            sender?: { id?: string };
+            create_time?: string;
+          }> } };
 
-      for (const item of items) {
-        // Only include replies to this thread, not the root itself or the current message
-        if (
-          item.root_id === threadRootId &&
-          item.message_id !== threadRootId &&
-          item.message_id !== currentMessageId
-        ) {
-          const text = this.extractPlainText(item.msg_type ?? 'text', item.body?.content ?? '');
-          if (text) {
-            messages.push({
-              sender_id: item.sender?.id ?? 'unknown',
-              text,
-              create_time: item.create_time ?? '',
-            });
+          for (const item of data?.data?.items ?? []) {
+            if (item.message_id !== currentMessageId) {
+              const text = this.extractPlainText(item.msg_type ?? 'text', item.body?.content ?? '');
+              if (text) {
+                messages.push({
+                  sender_id: item.sender?.id ?? 'unknown',
+                  text,
+                  create_time: item.create_time ?? '',
+                });
+              }
+            }
           }
         }
       }
