@@ -161,21 +161,35 @@ export class LarkClient {
 
   // ─── Message Sending ───────────────────────────────────────────
 
-  /**
-   * Send a text message
-   */
-  async sendText(chatId: string, text: string, options?: LarkSendOptions): Promise<LarkSendResult> {
+  private async sendWithOptionalReply(
+    chatId: string,
+    msgType: 'text' | 'interactive' | 'post' | 'image',
+    content: string,
+    options?: LarkSendOptions
+  ): Promise<LarkSendResult> {
+    const rootId = options?.rootId?.trim();
+
     try {
-      const rootId = options?.rootId?.trim();
-      const res = await this.sdk.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'text',
-          content: JSON.stringify({ text }),
-          ...(rootId ? { root_id: rootId } : {}),
-        },
-      });
+      let res: { data?: { message_id?: string } } | null = null;
+
+      if (rootId) {
+        res = await this.sdk.im.v1.message.reply({
+          path: { message_id: rootId },
+          data: {
+            msg_type: msgType,
+            content,
+          },
+        }) as { data?: { message_id?: string } };
+      } else {
+        res = await this.sdk.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            msg_type: msgType,
+            content,
+          },
+        }) as { data?: { message_id?: string } };
+      }
 
       if (res?.data?.message_id) {
         return { success: true, messageId: res.data.message_id };
@@ -185,84 +199,34 @@ export class LarkClient {
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }
+  }
+
+  /**
+   * Send a text message
+   */
+  async sendText(chatId: string, text: string, options?: LarkSendOptions): Promise<LarkSendResult> {
+    return this.sendWithOptionalReply(chatId, 'text', JSON.stringify({ text }), options);
   }
 
   /**
    * Send an interactive card message
    */
   async sendCard(chatId: string, card: LarkCard, options?: LarkSendOptions): Promise<LarkSendResult> {
-    try {
-      const rootId = options?.rootId?.trim();
-      const res = await this.sdk.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'interactive',
-          content: JSON.stringify(card),
-          ...(rootId ? { root_id: rootId } : {}),
-        },
-      });
-
-      if (res?.data?.message_id) {
-        return { success: true, messageId: res.data.message_id };
-      }
-
-      return { success: false, error: 'No message_id in response' };
-    } catch (e) {
-      return { success: false, error: (e as Error).message };
-    }
+    return this.sendWithOptionalReply(chatId, 'interactive', JSON.stringify(card), options);
   }
 
   /**
    * Send a post (rich text) message
    */
   async sendPost(chatId: string, content: object, options?: LarkSendOptions): Promise<LarkSendResult> {
-    try {
-      const rootId = options?.rootId?.trim();
-      const res = await this.sdk.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'post',
-          content: JSON.stringify(content),
-          ...(rootId ? { root_id: rootId } : {}),
-        },
-      });
-
-      if (res?.data?.message_id) {
-        return { success: true, messageId: res.data.message_id };
-      }
-
-      return { success: false, error: 'No message_id in response' };
-    } catch (e) {
-      return { success: false, error: (e as Error).message };
-    }
+    return this.sendWithOptionalReply(chatId, 'post', JSON.stringify(content), options);
   }
 
   /**
    * Send an image message
    */
   async sendImage(chatId: string, imageKey: string, options?: LarkSendOptions): Promise<LarkSendResult> {
-    try {
-      const rootId = options?.rootId?.trim();
-      const res = await this.sdk.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'image',
-          content: JSON.stringify({ image_key: imageKey }),
-          ...(rootId ? { root_id: rootId } : {}),
-        },
-      });
-
-      if (res?.data?.message_id) {
-        return { success: true, messageId: res.data.message_id };
-      }
-
-      return { success: false, error: 'No message_id in response' };
-    } catch (e) {
-      return { success: false, error: (e as Error).message };
-    }
+    return this.sendWithOptionalReply(chatId, 'image', JSON.stringify({ image_key: imageKey }), options);
   }
 
   // ─── Image Operations ──────────────────────────────────────────
