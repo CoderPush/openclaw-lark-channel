@@ -34,15 +34,18 @@ export class LarkClient {
   private domain: 'lark' | 'feishu';
   private tokenCache: LarkTokenCache = { token: null, expireTime: 0 };
   private imageCacheDir: string;
+  public messageFormat: 'text' | 'card' | 'auto' = 'text';
 
   constructor(params: {
     appId: string;
     appSecret: string;
     domain?: 'lark' | 'feishu';
+    messageFormat?: 'text' | 'card' | 'auto';
   }) {
     this.appId = params.appId;
     this.appSecret = params.appSecret;
     this.domain = params.domain ?? 'lark';
+    this.messageFormat = params.messageFormat ?? 'text';
 
     this.sdk = new LarkSDK.Client({
       appId: this.appId,

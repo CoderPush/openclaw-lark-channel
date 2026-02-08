@@ -186,7 +186,7 @@ export type MessageType = 'skip' | 'text' | 'interactive';
  *
  * @param text    - The message content
  * @param format  - 'text' always sends plain text, 'card' always sends interactive
- *                  cards for non-trivial messages, 'auto' uses the length heuristic.
+ *                  cards, 'auto' uses the length heuristic.
  *                  Defaults to 'text'.
  */
 export function selectMessageType(

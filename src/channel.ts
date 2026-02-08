@@ -138,7 +138,6 @@ const larkChannelMeta = {
 
 let inboundConsumerRunning = false;
 let outboundConsumerRunning = false;
-let currentMessageFormat: 'text' | 'card' | 'auto' = 'text';
 let inboundInterval: NodeJS.Timeout | null = null;
 let outboundInterval: NodeJS.Timeout | null = null;
 
@@ -511,7 +510,6 @@ async function processInboundQueue(
             await sendToLark(client, msg.chat_id, text, {
               sessionKey: route.sessionKey,
               rootId,
-              messageFormat: currentMessageFormat,
             });
             debugLog(`✅ Sent ${info.kind} to Lark`);
             console.log(`[DISPATCH] ✅ Sent ${info.kind} to Lark`);
@@ -585,7 +583,6 @@ async function processOutboundQueue(
 
       const result = await sendToLark(client, msg.chat_id, msg.content, {
         sessionKey: msg.session_key,
-        messageFormat: currentMessageFormat,
       });
 
       if (result.skipped) {
@@ -672,10 +669,9 @@ async function sendToLarkWithRetry(
   options?: {
     sessionKey?: string;
     rootId?: string;
-    messageFormat?: 'text' | 'card' | 'auto';
   }
 ): Promise<{ skipped?: boolean; messageId?: string; error?: string }> {
-  const msgType = selectMessageType(content, options?.messageFormat);
+  const msgType = selectMessageType(content, client.messageFormat);
 
   if (msgType === 'skip') {
     return { skipped: true };
@@ -876,7 +872,6 @@ export const larkPlugin = {
       const rootId = (replyToId ?? threadId)?.toString().trim();
       const result = await sendToLark(client, to, text, {
         rootId: rootId || undefined,
-        messageFormat: currentMessageFormat,
       });
       return { channel: 'lark' as const, ...result };
     },
@@ -1030,6 +1025,7 @@ export const larkPlugin = {
         appId: account.appId,
         appSecret: account.appSecret,
         domain: account.domain,
+        messageFormat: account.config.messageFormat ?? 'text',
       });
       setLarkClient(client);
 
@@ -1073,9 +1069,6 @@ export const larkPlugin = {
       const gatewayPort = cfg.gateway?.port ?? 18789;
       const gatewayToken = cfg.gateway?.auth?.token ?? '';
       const agentId = 'main';
-
-      // Apply message format preference
-      currentMessageFormat = account.config.messageFormat ?? 'text';
 
       // Start consumers
       startConsumers(queue, client, gatewayToken, gatewayPort, agentId);

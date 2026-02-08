@@ -56,7 +56,7 @@ export const LarkConfigSchema = z.object({
     .describe('Group chat security policy'),
 
   messageFormat: z.enum(['text', 'card', 'auto']).optional().default('text')
-    .describe('Message format: text (plain text always), card (interactive cards for long messages), auto (heuristic based on length)'),
+    .describe('Message format: text (plain text always), card (interactive cards always), auto (heuristic based on length)'),
   
   groups: z.record(z.string(), LarkGroupConfigSchema).optional()
     .describe('Group-specific configuration'),
