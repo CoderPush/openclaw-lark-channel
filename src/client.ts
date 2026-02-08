@@ -456,6 +456,138 @@ export class LarkClient {
     return { texts, imageKeys };
   }
 
+  // ─── Thread Context ──────────────────────────────────────────────
+
+  /**
+   * Get a single message by ID.
+   */
+  async getMessage(messageId: string): Promise<{
+    message_id: string;
+    msg_type: string;
+    body: string;
+    sender_id: string;
+    create_time: string;
+  } | null> {
+    try {
+      const res = await this.sdk.im.v1.message.get({
+        path: { message_id: messageId },
+      }) as { data?: { items?: Array<{
+        message_id?: string;
+        msg_type?: string;
+        body?: { content?: string };
+        sender?: { id?: string; sender_type?: string };
+        create_time?: string;
+      }> } };
+
+      const item = res?.data?.items?.[0];
+      if (!item) return null;
+
+      return {
+        message_id: item.message_id ?? messageId,
+        msg_type: item.msg_type ?? 'text',
+        body: item.body?.content ?? '',
+        sender_id: item.sender?.id ?? 'unknown',
+        create_time: item.create_time ?? '',
+      };
+    } catch (e) {
+      console.error('[LARK-THREAD] getMessage failed:', (e as Error).message);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch thread context: root message + prior replies.
+   * Returns messages in chronological order, excluding the current message.
+   */
+  async getThreadContext(
+    chatId: string,
+    threadRootId: string,
+    currentMessageId: string,
+    maxReplies = 10,
+  ): Promise<Array<{ sender_id: string; text: string }>> {
+    const messages: Array<{ sender_id: string; text: string; create_time: string }> = [];
+
+    try {
+      // 1. Get the root message
+      const root = await this.getMessage(threadRootId);
+      if (root) {
+        const text = this.extractPlainText(root.msg_type, root.body);
+        if (text) {
+          messages.push({ sender_id: root.sender_id, text, create_time: root.create_time });
+        }
+      }
+
+      // 2. List recent messages in the chat and filter for this thread
+      const res = await this.sdk.im.v1.message.list({
+        params: {
+          container_id_type: 'chat',
+          container_id: chatId,
+          page_size: 50,
+          sort_type: 'ByCreateTimeAsc',
+        },
+      }) as { data?: { items?: Array<{
+        message_id?: string;
+        root_id?: string;
+        msg_type?: string;
+        body?: { content?: string };
+        sender?: { id?: string };
+        create_time?: string;
+      }> } };
+
+      const items = res?.data?.items ?? [];
+
+      for (const item of items) {
+        // Only include replies to this thread, not the root itself or the current message
+        if (
+          item.root_id === threadRootId &&
+          item.message_id !== threadRootId &&
+          item.message_id !== currentMessageId
+        ) {
+          const text = this.extractPlainText(item.msg_type ?? 'text', item.body?.content ?? '');
+          if (text) {
+            messages.push({
+              sender_id: item.sender?.id ?? 'unknown',
+              text,
+              create_time: item.create_time ?? '',
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[LARK-THREAD] getThreadContext failed:', (e as Error).message);
+    }
+
+    // Sort chronologically and limit replies (keep root + last N replies)
+    messages.sort((a, b) => a.create_time.localeCompare(b.create_time));
+    const trimmed = messages.length > maxReplies + 1
+      ? [messages[0], ...messages.slice(-(maxReplies))]
+      : messages;
+    return trimmed.map(({ sender_id, text }) => ({ sender_id, text }));
+  }
+
+  /**
+   * Extract plain text from a Lark message body regardless of msg_type.
+   */
+  private extractPlainText(msgType: string, body: string): string {
+    try {
+      if (msgType === 'text') {
+        const parsed = JSON.parse(body) as { text?: string };
+        return (parsed.text ?? '').replace(/@_user_\d+\s*/g, '').trim();
+      }
+      if (msgType === 'post') {
+        const { texts } = this.parsePostContent(body);
+        return texts.join(' ').trim();
+      }
+      if (msgType === 'image') return '[image]';
+      if (msgType === 'file') return '[file]';
+      if (msgType === 'audio') return '[voice message]';
+      if (msgType === 'interactive') return '[card]';
+    } catch {
+      // Ignore parse errors
+    }
+    return '';
+  }
+
   // ─── Getters ───────────────────────────────────────────────────
 
   get client(): LarkSDK.Client {
