@@ -209,7 +209,6 @@ export class MessageQueue {
       
       CREATE INDEX IF NOT EXISTS idx_inbound_status ON inbound_queue(status, next_retry_at);
       CREATE INDEX IF NOT EXISTS idx_inbound_msgid ON inbound_queue(message_id);
-      CREATE INDEX IF NOT EXISTS idx_inbound_chat_type ON inbound_queue(chat_type, chat_id);
       
       -- Sent message tracking (for dedup)
       CREATE TABLE IF NOT EXISTS sent_messages (
