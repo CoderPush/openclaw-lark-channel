@@ -41,6 +41,31 @@ export function decryptPayload(encrypt: string, encryptKey: string): unknown {
   );
 }
 
+// ─── Mention Handling ─────────────────────────────────────────────
+
+/**
+ * Replace @_user_N markers with display names from the mentions array.
+ * Lark text messages contain placeholders like "@_user_1" which map to
+ * entries in the mentions array by their `key` field.
+ * Bot self-mentions (where id.open_id matches botOpenId) are stripped entirely.
+ */
+export function replaceMentionMarkers(
+  text: string,
+  mentions: Array<{ key?: string; name?: string; id?: { open_id?: string } }>,
+  botOpenId?: string
+): string {
+  if (!mentions.length) return text;
+
+  for (const m of mentions) {
+    if (!m.key) continue;
+    const isBotSelf = botOpenId && m.id?.open_id === botOpenId;
+    const replacement = isBotSelf ? '' : `@${m.name ?? 'user'}`;
+    text = text.replace(new RegExp(m.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*', 'g'), replacement ? replacement + ' ' : '');
+  }
+
+  return text.trim();
+}
+
 // ─── Group Chat Filtering ────────────────────────────────────────
 
 /**
@@ -669,8 +694,8 @@ export class WebhookHandler {
           return;
         }
 
-        // Remove mention markers from text
-        text = text.replace(/@_user_\d+\s*/g, '').trim();
+        // Replace mention markers with display names
+        text = replaceMentionMarkers(text, mentions);
 
         // Check if we should respond
         const requireMention = this.config.groupRequireMention ?? true;

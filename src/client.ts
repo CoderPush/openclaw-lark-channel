@@ -430,9 +430,9 @@ export class LarkClient {
     try {
       const parsed = typeof content === 'string' ? JSON.parse(content) : content;
       const typedParsed = parsed as {
-        content?: Array<Array<{ tag: string; text?: string; image_key?: string; href?: string }>>;
-        zh_cn?: { content?: Array<Array<{ tag: string; text?: string; image_key?: string; href?: string }>> };
-        en_us?: { content?: Array<Array<{ tag: string; text?: string; image_key?: string; href?: string }>> };
+        content?: Array<Array<{ tag: string; text?: string; image_key?: string; href?: string; user_name?: string; user_id?: string }>>;
+        zh_cn?: { content?: Array<Array<{ tag: string; text?: string; image_key?: string; href?: string; user_name?: string; user_id?: string }>> };
+        en_us?: { content?: Array<Array<{ tag: string; text?: string; image_key?: string; href?: string; user_name?: string; user_id?: string }>> };
       };
 
       const blocks = typedParsed.content ?? typedParsed.zh_cn?.content ?? typedParsed.en_us?.content;
@@ -442,6 +442,7 @@ export class LarkClient {
         if (!Array.isArray(para)) continue;
         for (const el of para) {
           if (el.tag === 'text' && el.text) texts.push(el.text);
+          if (el.tag === 'at' && el.user_name) texts.push(`@${el.user_name}`);
           if (el.tag === 'img' && el.image_key) imageKeys.push(el.image_key);
           if (el.tag === 'a' && el.text) {
             texts.push(el.href ? `[${el.text}](${el.href})` : el.text);

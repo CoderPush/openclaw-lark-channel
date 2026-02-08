@@ -108,3 +108,49 @@ describe('LarkClient send methods', () => {
     });
   });
 });
+
+describe('LarkClient parsePostContent', () => {
+  let client: LarkClient;
+
+  beforeEach(() => {
+    client = new LarkClient({ appId: 'test', appSecret: 'test', domain: 'lark' });
+  });
+
+  it('should extract @mention display names from at tags', () => {
+    const content = JSON.stringify({
+      content: [[
+        { tag: 'text', text: 'Tech lead ' },
+        { tag: 'at', user_name: 'Si Huynh', user_id: 'ou_111' },
+        { tag: 'text', text: ' ' },
+        { tag: 'at', user_name: 'Hao Doan', user_id: 'ou_222' },
+        { tag: 'text', text: ' please review' },
+      ]],
+    });
+    const { texts } = client.parsePostContent(content);
+    expect(texts.join(' ')).toBe('Tech lead  @Si Huynh   @Hao Doan  please review');
+  });
+
+  it('should handle mixed text, at, and link tags', () => {
+    const content = JSON.stringify({
+      content: [[
+        { tag: 'text', text: 'Hello ' },
+        { tag: 'at', user_name: 'Harley', user_id: 'ou_333' },
+        { tag: 'text', text: ' check ' },
+        { tag: 'a', text: 'this link', href: 'https://example.com' },
+      ]],
+    });
+    const { texts } = client.parsePostContent(content);
+    expect(texts).toEqual(['Hello ', '@Harley', ' check ', '[this link](https://example.com)']);
+  });
+
+  it('should handle at tags without user_name', () => {
+    const content = JSON.stringify({
+      content: [[
+        { tag: 'at', user_id: 'ou_111' },
+        { tag: 'text', text: ' hello' },
+      ]],
+    });
+    const { texts } = client.parsePostContent(content);
+    expect(texts).toEqual([' hello']);
+  });
+});
