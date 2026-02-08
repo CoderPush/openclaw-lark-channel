@@ -71,36 +71,53 @@ describe('Card Builder', () => {
   });
 
   describe('selectMessageType', () => {
-    it('should skip NO_REPLY and HEARTBEAT_OK', () => {
-      expect(selectMessageType('NO_REPLY')).toBe('skip');
-      expect(selectMessageType('HEARTBEAT_OK')).toBe('skip');
-      expect(selectMessageType(null)).toBe('skip');
-      expect(selectMessageType(undefined)).toBe('skip');
-      expect(selectMessageType('')).toBe('skip');
+    it('should skip NO_REPLY and HEARTBEAT_OK regardless of format', () => {
+      for (const format of ['text', 'card', 'auto'] as const) {
+        expect(selectMessageType('NO_REPLY', format)).toBe('skip');
+        expect(selectMessageType('HEARTBEAT_OK', format)).toBe('skip');
+        expect(selectMessageType(null, format)).toBe('skip');
+        expect(selectMessageType(undefined, format)).toBe('skip');
+        expect(selectMessageType('', format)).toBe('skip');
+      }
     });
 
-    it('should use text for short messages', () => {
-      expect(selectMessageType('Hi!')).toBe('text');
-      expect(selectMessageType('Short reply here')).toBe('text');
-    });
-
-    it('should use interactive for longer messages', () => {
+    it('should default to text format', () => {
       const longMessage = 'This is a longer message that spans multiple lines.\n'.repeat(5);
-      expect(selectMessageType(longMessage)).toBe('interactive');
+      expect(selectMessageType('Hi!')).toBe('text');
+      expect(selectMessageType(longMessage)).toBe('text');
     });
 
-    it('should use interactive for multiline messages', () => {
-      expect(selectMessageType('Line 1\nLine 2\nLine 3')).toBe('interactive');
+    it('should always return text when format is text', () => {
+      const longMessage = 'This is a longer message that spans multiple lines.\n'.repeat(5);
+      expect(selectMessageType('Hi!', 'text')).toBe('text');
+      expect(selectMessageType(longMessage, 'text')).toBe('text');
+    });
+
+    it('should always return interactive when format is card', () => {
+      expect(selectMessageType('Hi!', 'card')).toBe('interactive');
+      expect(selectMessageType('Short reply', 'card')).toBe('interactive');
+    });
+
+    it('should use heuristic when format is auto', () => {
+      expect(selectMessageType('Hi!', 'auto')).toBe('text');
+      expect(selectMessageType('Short reply here', 'auto')).toBe('text');
+
+      const longMessage = 'This is a longer message that spans multiple lines.\n'.repeat(5);
+      expect(selectMessageType(longMessage, 'auto')).toBe('interactive');
+      expect(selectMessageType('Line 1\nLine 2\nLine 3', 'auto')).toBe('interactive');
     });
   });
 
   describe('buildCard', () => {
-    it('should build a basic card', () => {
+    it('should build a basic card without metadata by default', () => {
       const card = buildCard({ text: 'Hello, world!' });
 
       expect(card.config?.wide_screen_mode).toBe(true);
       expect(card.elements?.length).toBeGreaterThan(0);
       expect(card.elements?.[0]).toHaveProperty('tag', 'div');
+      // No note element by default (showTimestamp and showSessionKey are false)
+      const note = card.elements?.find((el) => el.tag === 'note');
+      expect(note).toBeUndefined();
     });
 
     it('should add header for titled content', () => {

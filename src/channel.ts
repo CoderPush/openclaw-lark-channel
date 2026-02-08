@@ -671,7 +671,7 @@ async function sendToLarkWithRetry(
     rootId?: string;
   }
 ): Promise<{ skipped?: boolean; messageId?: string; error?: string }> {
-  const msgType = selectMessageType(content);
+  const msgType = selectMessageType(content, client.messageFormat);
 
   if (msgType === 'skip') {
     return { skipped: true };
@@ -1025,6 +1025,7 @@ export const larkPlugin = {
         appId: account.appId,
         appSecret: account.appSecret,
         domain: account.domain,
+        messageFormat: account.config.messageFormat ?? 'text',
       });
       setLarkClient(client);
 

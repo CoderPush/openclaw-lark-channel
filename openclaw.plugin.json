@@ -74,6 +74,12 @@
         "enum": ["lark", "feishu"],
         "description": "Lark domain (lark for international, feishu for China)",
         "default": "lark"
+      },
+      "messageFormat": {
+        "type": "string",
+        "enum": ["text", "card", "auto"],
+        "description": "Message format: text (plain text always), card (interactive cards always), auto (length-based heuristic)",
+        "default": "text"
       }
     }
   },
