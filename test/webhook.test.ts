@@ -98,6 +98,12 @@ describe('Webhook', () => {
       expect(replaceMentionMarkers(text, mentions)).toBe('Hey @user check this');
     });
 
+    it('should preserve punctuation after mention', () => {
+      const text = 'Hi @_user_1, how are you?';
+      const mentions = [{ key: '@_user_1', name: 'Alice', id: { open_id: 'ou_111' } }];
+      expect(replaceMentionMarkers(text, mentions)).toBe('Hi @Alice, how are you?');
+    });
+
     it('should return text unchanged when no mentions', () => {
       expect(replaceMentionMarkers('Hello world', [])).toBe('Hello world');
     });

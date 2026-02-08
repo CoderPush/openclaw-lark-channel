@@ -58,9 +58,15 @@ export function replaceMentionMarkers(
 
   for (const m of mentions) {
     if (!m.key) continue;
+    const escaped = m.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const isBotSelf = botOpenId && m.id?.open_id === botOpenId;
-    const replacement = isBotSelf ? '' : `@${m.name ?? 'user'}`;
-    text = text.replace(new RegExp(m.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*', 'g'), replacement ? replacement + ' ' : '');
+    if (isBotSelf) {
+      // Strip bot mention and any trailing whitespace
+      text = text.replace(new RegExp(escaped + '\\s*', 'g'), '');
+    } else {
+      // Replace marker with display name, preserving surrounding punctuation
+      text = text.replace(new RegExp(escaped, 'g'), `@${m.name ?? 'user'}`);
+    }
   }
 
   return text.trim();
