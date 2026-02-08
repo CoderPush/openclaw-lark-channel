@@ -158,7 +158,10 @@ This is a comprehensive analysis of the data provided.
 Generated at: ${new Date().toISOString()}
       `.trim();
 
-      const type = selectMessageType(longResponse);
+      // Default format is 'text', so even long messages return 'text'
+      expect(selectMessageType(longResponse)).toBe('text');
+      // With 'auto' format, long messages return 'interactive'
+      const type = selectMessageType(longResponse, 'auto');
       expect(type).toBe('interactive');
 
       const card = buildCard({ text: longResponse, sessionKey: 'lark:test' });

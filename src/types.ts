@@ -21,6 +21,7 @@ export interface LarkChannelConfig {
   groupPolicy?: 'open' | 'allowlist' | 'deny';
   groups?: Record<string, LarkGroupConfig>;
   queueDbPath?: string;
+  messageFormat?: 'text' | 'card' | 'auto';
   domain?: 'lark' | 'feishu';
   name?: string;
   accounts?: Record<string, LarkAccountConfig>;

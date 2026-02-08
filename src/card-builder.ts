@@ -101,8 +101,8 @@ export function buildCard(options: BuildCardOptions): LarkCard {
     sessionKey,
     title: explicitTitle,
     color: explicitColor,
-    showTimestamp = true,
-    showSessionKey = true,
+    showTimestamp = false,
+    showSessionKey = false,
     maxLength = MAX_CARD_LENGTH,
   } = options;
 
@@ -182,19 +182,34 @@ export function buildCard(options: BuildCardOptions): LarkCard {
 export type MessageType = 'skip' | 'text' | 'interactive';
 
 /**
- * Select the appropriate message type based on content
+ * Select the appropriate message type based on content and format preference.
+ *
+ * @param text    - The message content
+ * @param format  - 'text' always sends plain text, 'card' always sends interactive
+ *                  cards for non-trivial messages, 'auto' uses the length heuristic.
+ *                  Defaults to 'text'.
  */
-export function selectMessageType(text: string | null | undefined): MessageType {
+export function selectMessageType(
+  text: string | null | undefined,
+  format: 'text' | 'card' | 'auto' = 'text',
+): MessageType {
   if (!text || text === 'NO_REPLY' || text === 'HEARTBEAT_OK') {
     return 'skip';
   }
 
-  // Short, simple messages → plain text
+  if (format === 'text') {
+    return 'text';
+  }
+
+  if (format === 'card') {
+    return 'interactive';
+  }
+
+  // 'auto' — original heuristic
   if (text.length < 100 && text.split('\n').length <= 2) {
     return 'text';
   }
 
-  // Everything else → interactive card
   return 'interactive';
 }
 
@@ -205,14 +220,18 @@ export class CardBuilder {
   private showTimestamp: boolean;
   private showSessionKey: boolean;
 
+  private messageFormat: 'text' | 'card' | 'auto';
+
   constructor(options?: {
     sessionKey?: string;
     showTimestamp?: boolean;
     showSessionKey?: boolean;
+    messageFormat?: 'text' | 'card' | 'auto';
   }) {
     this.defaultSessionKey = options?.sessionKey ?? 'unknown';
-    this.showTimestamp = options?.showTimestamp ?? true;
-    this.showSessionKey = options?.showSessionKey ?? true;
+    this.showTimestamp = options?.showTimestamp ?? false;
+    this.showSessionKey = options?.showSessionKey ?? false;
+    this.messageFormat = options?.messageFormat ?? 'text';
   }
 
   build(text: string, options?: Partial<BuildCardOptions>): LarkCard {
@@ -226,6 +245,6 @@ export class CardBuilder {
   }
 
   selectType(text: string | null | undefined): MessageType {
-    return selectMessageType(text);
+    return selectMessageType(text, this.messageFormat);
   }
 }
