@@ -35,7 +35,11 @@ import { LarkConfigSchema } from './config-schema.js';
 
 const DEFAULT_ACCOUNT_ID = 'default';
 const DEFAULT_WEBHOOK_PORT = 3000;
-const CONSUMER_INTERVAL_MS = 500;
+const CONSUMER_POLL_FAST_MS = 250;
+const CONSUMER_POLL_MAX_MS = 4000;
+const CONSUMER_POLL_BACKOFF_FACTOR = 2;
+const DISPATCH_TIMEOUT_MS = 300_000; // 5 minutes
+const DISPATCH_DEBUG_LOG_FILE = process.env.LARK_DISPATCH_LOG_FILE?.trim() ?? '';
 
 // ─── Config Helpers ──────────────────────────────────────────────
 
@@ -140,6 +144,28 @@ let inboundConsumerRunning = false;
 let outboundConsumerRunning = false;
 let inboundInterval: NodeJS.Timeout | null = null;
 let outboundInterval: NodeJS.Timeout | null = null;
+let inboundPollMs = CONSUMER_POLL_FAST_MS;
+let outboundPollMs = CONSUMER_POLL_FAST_MS;
+let inboundTickInFlight = false;
+let outboundTickInFlight = false;
+let dispatchDebugLogWarningShown = false;
+
+function debugDispatchLog(line: string): void {
+  if (!DISPATCH_DEBUG_LOG_FILE) {
+    return;
+  }
+
+  const payload = `${new Date().toISOString()} ${line}\n`;
+  void fs.promises.appendFile(DISPATCH_DEBUG_LOG_FILE, payload).catch((err: unknown) => {
+    if (!dispatchDebugLogWarningShown) {
+      dispatchDebugLogWarningShown = true;
+      console.warn(
+        `[DISPATCH] Failed to append debug logs to ${DISPATCH_DEBUG_LOG_FILE}:`,
+        (err as Error).message
+      );
+    }
+  });
+}
 
 // ⚡ CRITICAL FIX: Use dispatchReplyWithBufferedBlockDispatcher like Telegram
 // This ensures session info, usage footer, reasoning blocks all work correctly.
@@ -303,10 +329,13 @@ async function processInboundQueue(
   _gatewayToken: string,
   _gatewayPort: number,
   _agentId: string
-): Promise<void> {
-  if (!inboundConsumerRunning) return;
+): Promise<number> {
+  if (!inboundConsumerRunning) return 0;
 
   const messages = queue.dequeueInbound(3);
+  if (messages.length === 0) {
+    return 0;
+  }
 
   for (const msg of messages) {
     queue.markInboundProcessing(msg.id);
@@ -464,18 +493,10 @@ async function processInboundQueue(
       console.log(`[INBOUND] Starting dispatch for message: "${msg.message_text.substring(0, 50)}..." | images: ${images.length}`);
       console.log(`[INBOUND] Context: SessionKey=${route.sessionKey}, ChatId=${msg.chat_id}, Surface=${ctx.Surface}, OriginatingChannel=${ctx.OriginatingChannel}`);
       
-      // Write debug to file
-      const fs = require('fs');
-      const debugLog = (line: string) => {
-        const ts = new Date().toISOString();
-        fs.appendFileSync('/tmp/lark-dispatch.log', `${ts} ${line}\n`);
-      };
-      debugLog(`=== Processing message #${msg.id}: "${msg.message_text.substring(0, 50)}..."`);
-      debugLog(`Context: SessionKey=${route.sessionKey}, Surface=${ctx.Surface}, OriginatingChannel=${ctx.OriginatingChannel}`);
+      debugDispatchLog(`=== Processing message #${msg.id}: "${msg.message_text.substring(0, 50)}..."`);
+      debugDispatchLog(`Context: SessionKey=${route.sessionKey}, Surface=${ctx.Surface}, OriginatingChannel=${ctx.OriginatingChannel}`);
 
       // Use the dispatch system - SAME AS TELEGRAM
-      // Add a timeout to prevent hanging indefinitely
-      const DISPATCH_TIMEOUT_MS = 300_000; // 5 minutes
       
       let deliverCallCount = 0;
       let lastDeliveryKind = '';
@@ -487,18 +508,18 @@ async function processInboundQueue(
           deliver: async (payload: { text?: string; mediaUrl?: string; replyToId?: string }, info) => {
             deliverCallCount++;
             lastDeliveryKind = info.kind;
-            debugLog(`deliver() called #${deliverCallCount}: kind=${info.kind}, hasText=${!!payload.text}, textLen=${payload.text?.length ?? 0}`);
+            debugDispatchLog(`deliver() called #${deliverCallCount}: kind=${info.kind}, hasText=${!!payload.text}, textLen=${payload.text?.length ?? 0}`);
             console.log(`[DISPATCH] deliver() called #${deliverCallCount}: kind=${info.kind}, hasText=${!!payload.text}, textLen=${payload.text?.length ?? 0}, hasMedia=${!!payload.mediaUrl}`);
             
             // Process ALL kinds now for debugging
             const text = payload.text?.trim();
             if (!text) {
-              debugLog(`Skipping empty payload for kind=${info.kind}`);
+              debugDispatchLog(`Skipping empty payload for kind=${info.kind}`);
               console.log(`[DISPATCH] Skipping empty payload for kind=${info.kind}`);
               return;
             }
 
-            debugLog(`Delivering ${info.kind}: ${text.length} chars to ${msg.chat_id}`);
+            debugDispatchLog(`Delivering ${info.kind}: ${text.length} chars to ${msg.chat_id}`);
             console.log(`[DISPATCH] Delivering ${info.kind}: ${text.length} chars to ${msg.chat_id}`);
             
             // Prefer dispatcher replyToId (if set); otherwise keep group replies in the current thread root.
@@ -511,24 +532,24 @@ async function processInboundQueue(
               sessionKey: route.sessionKey,
               rootId,
             });
-            debugLog(`✅ Sent ${info.kind} to Lark`);
+            debugDispatchLog(`✅ Sent ${info.kind} to Lark`);
             console.log(`[DISPATCH] ✅ Sent ${info.kind} to Lark`);
           },
           onError: (err, info) => {
-            debugLog(`ERROR ${info.kind}: ${(err as Error).message}`);
+            debugDispatchLog(`ERROR ${info.kind}: ${(err as Error).message}`);
             console.error(`[DISPATCH] ${info.kind} error:`, (err as Error).message);
             // Log stack trace for debugging
             if ((err as Error).stack) {
-              debugLog(`Stack: ${(err as Error).stack}`);
+              debugDispatchLog(`Stack: ${(err as Error).stack}`);
               console.error(`[DISPATCH] Stack:`, (err as Error).stack);
             }
           },
           onSkip: (_payload, info) => {
-            debugLog(`onSkip: reason=${info.reason}`);
+            debugDispatchLog(`onSkip: reason=${info.reason}`);
             console.log(`[DISPATCH] onSkip: reason=${info.reason}`);
           },
           onReplyStart: () => {
-            debugLog(`onReplyStart called`);
+            debugDispatchLog(`onReplyStart called`);
             console.log(`[DISPATCH] onReplyStart called`);
           },
         },
@@ -546,17 +567,14 @@ async function processInboundQueue(
 
       const dispatchResult = await Promise.race([dispatchPromise, timeoutPromise]);
 
-      debugLog(`✅ Completed #${msg.id} | deliverCalls=${deliverCallCount} | lastKind=${lastDeliveryKind} | dispatchResult=${JSON.stringify(dispatchResult)}`);
+      debugDispatchLog(`✅ Completed #${msg.id} | deliverCalls=${deliverCallCount} | lastKind=${lastDeliveryKind} | dispatchResult=${JSON.stringify(dispatchResult)}`);
       console.log(`[INBOUND] ✅ Completed #${msg.id} | deliverCalls=${deliverCallCount} | lastKind=${lastDeliveryKind} | dispatchResult=${JSON.stringify(dispatchResult)}`);
       queue.markInboundCompleted(msg.id, 'delivered');
     } catch (err) {
       const error = err as Error;
-      // Log to file in catch too
-      const fs = require('fs');
-      const ts = new Date().toISOString();
-      fs.appendFileSync('/tmp/lark-dispatch.log', `${ts} ❌ Failed #${msg.id}: ${error.message}\n`);
+      debugDispatchLog(`❌ Failed #${msg.id}: ${error.message}`);
       if (error.stack) {
-        fs.appendFileSync('/tmp/lark-dispatch.log', `${ts} Stack: ${error.stack}\n`);
+        debugDispatchLog(`Stack: ${error.stack}`);
       }
       console.error(`[INBOUND] ❌ Failed #${msg.id}:`, error.message);
       if (error.stack) {
@@ -565,15 +583,20 @@ async function processInboundQueue(
       queue.markInboundRetry(msg.id, error.message);
     }
   }
+
+  return messages.length;
 }
 
 async function processOutboundQueue(
   queue: MessageQueue,
   client: LarkClient
-): Promise<void> {
-  if (!outboundConsumerRunning) return;
+): Promise<number> {
+  if (!outboundConsumerRunning) return 0;
 
   const messages = queue.dequeueOutbound(5);
+  if (messages.length === 0) {
+    return 0;
+  }
 
   for (const msg of messages) {
     queue.markOutboundProcessing(msg.id);
@@ -597,6 +620,76 @@ async function processOutboundQueue(
       queue.markOutboundRetry(msg.id, (err as Error).message);
     }
   }
+
+  return messages.length;
+}
+
+function scheduleInboundTick(
+  queue: MessageQueue,
+  gatewayToken: string,
+  gatewayPort: number,
+  agentId: string
+): void {
+  if (!inboundConsumerRunning) {
+    return;
+  }
+  inboundInterval = setTimeout(() => {
+    void runInboundTick(queue, gatewayToken, gatewayPort, agentId);
+  }, inboundPollMs);
+}
+
+async function runInboundTick(
+  queue: MessageQueue,
+  gatewayToken: string,
+  gatewayPort: number,
+  agentId: string
+): Promise<void> {
+  if (!inboundConsumerRunning || inboundTickInFlight) {
+    return;
+  }
+
+  inboundTickInFlight = true;
+  try {
+    const processed = await processInboundQueue(queue, gatewayToken, gatewayPort, agentId);
+    inboundPollMs = processed > 0
+      ? CONSUMER_POLL_FAST_MS
+      : Math.min(inboundPollMs * CONSUMER_POLL_BACKOFF_FACTOR, CONSUMER_POLL_MAX_MS);
+  } catch (err) {
+    inboundPollMs = CONSUMER_POLL_FAST_MS;
+    console.error('[CONSUMER] Inbound tick failed:', (err as Error).message);
+  } finally {
+    inboundTickInFlight = false;
+    scheduleInboundTick(queue, gatewayToken, gatewayPort, agentId);
+  }
+}
+
+function scheduleOutboundTick(queue: MessageQueue, client: LarkClient): void {
+  if (!outboundConsumerRunning) {
+    return;
+  }
+  outboundInterval = setTimeout(() => {
+    void runOutboundTick(queue, client);
+  }, outboundPollMs);
+}
+
+async function runOutboundTick(queue: MessageQueue, client: LarkClient): Promise<void> {
+  if (!outboundConsumerRunning || outboundTickInFlight) {
+    return;
+  }
+
+  outboundTickInFlight = true;
+  try {
+    const processed = await processOutboundQueue(queue, client);
+    outboundPollMs = processed > 0
+      ? CONSUMER_POLL_FAST_MS
+      : Math.min(outboundPollMs * CONSUMER_POLL_BACKOFF_FACTOR, CONSUMER_POLL_MAX_MS);
+  } catch (err) {
+    outboundPollMs = CONSUMER_POLL_FAST_MS;
+    console.error('[CONSUMER] Outbound tick failed:', (err as Error).message);
+  } finally {
+    outboundTickInFlight = false;
+    scheduleOutboundTick(queue, client);
+  }
 }
 
 function startConsumers(
@@ -608,35 +701,31 @@ function startConsumers(
 ): void {
   if (!inboundConsumerRunning) {
     inboundConsumerRunning = true;
+    inboundPollMs = CONSUMER_POLL_FAST_MS;
     console.log('[CONSUMER] 🚀 Starting INBOUND consumer (Lark → Gateway)');
-    inboundInterval = setInterval(
-      () => processInboundQueue(queue, gatewayToken, gatewayPort, agentId),
-      CONSUMER_INTERVAL_MS
-    );
-    processInboundQueue(queue, gatewayToken, gatewayPort, agentId);
+    void runInboundTick(queue, gatewayToken, gatewayPort, agentId);
   }
 
   if (!outboundConsumerRunning) {
     outboundConsumerRunning = true;
+    outboundPollMs = CONSUMER_POLL_FAST_MS;
     console.log('[CONSUMER] 🚀 Starting OUTBOUND consumer (Gateway → Lark)');
-    outboundInterval = setInterval(
-      () => processOutboundQueue(queue, client),
-      CONSUMER_INTERVAL_MS
-    );
-    processOutboundQueue(queue, client);
+    void runOutboundTick(queue, client);
   }
 }
 
 function stopConsumers(): void {
   inboundConsumerRunning = false;
   outboundConsumerRunning = false;
+  inboundTickInFlight = false;
+  outboundTickInFlight = false;
 
   if (inboundInterval) {
-    clearInterval(inboundInterval);
+    clearTimeout(inboundInterval);
     inboundInterval = null;
   }
   if (outboundInterval) {
-    clearInterval(outboundInterval);
+    clearTimeout(outboundInterval);
     outboundInterval = null;
   }
 }

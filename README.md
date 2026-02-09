@@ -252,24 +252,27 @@ If your bot uses encrypted events:
 ### Build
 
 ```bash
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 ### Test
 
 ```bash
-npm test
+pnpm test
 ```
 
 ### Local Development
 
 ```bash
 # Start in development mode
-npm run dev
+pnpm run dev
 
 # Run tests in watch mode
-npm run test:watch
+pnpm run test:watch
+
+# Run coverage
+pnpm run test:coverage
 ```
 
 ## API Reference

@@ -17,6 +17,7 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+pnpm-debug.log*
 
 # Test coverage
 coverage/
@@ -26,6 +27,6 @@ coverage/
 .env.local
 .env.*.local
 
-# Lock files (keep package-lock.json)
+# Optional lock files from other package managers
 yarn.lock
-pnpm-lock.yaml
+package-lock.json

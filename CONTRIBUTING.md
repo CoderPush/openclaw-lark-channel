@@ -12,11 +12,11 @@ Thank you for your interest in contributing to the OpenClaw Lark channel plugin!
    ```
 3. Install dependencies:
    ```bash
-   npm install
+   pnpm install
    ```
 4. Build:
    ```bash
-   npm run build
+   pnpm run build
    ```
 
 ## Development
@@ -42,16 +42,16 @@ Thank you for your interest in contributing to the OpenClaw Lark channel plugin!
 
 ```bash
 # Run all tests
-npm test
+pnpm test
 
 # Run tests in watch mode
-npm run test:watch
+pnpm run test:watch
 ```
 
 ### Building
 
 ```bash
-npm run build
+pnpm run build
 ```
 
 ## Submitting Changes
@@ -65,7 +65,7 @@ npm run build
 
 3. Ensure tests pass:
    ```bash
-   npm test
+   pnpm test
    ```
 
 4. Commit with a descriptive message:
