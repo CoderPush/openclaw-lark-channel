@@ -265,6 +265,19 @@ describe('MessageQueue', () => {
       // After completion, it goes to sent_messages table, so it should be 'already_sent'
       expect(duplicate.reason).toBe('already_sent');
     });
+
+    it('should track direct sends for dedup checks', () => {
+      queue.recordSentMessage('oc_abc', 'Direct API message', 'lark_msg_direct_1');
+
+      const duplicate = queue.enqueueOutbound('reply', {
+        sessionKey: 'lark:oc_abc',
+        chatId: 'oc_abc',
+        content: 'Direct API message',
+      });
+
+      expect(duplicate.enqueued).toBe(false);
+      expect(duplicate.reason).toBe('already_sent');
+    });
   });
 
   describe('Stats and Maintenance', () => {

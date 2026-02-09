@@ -149,6 +149,7 @@ let outboundPollMs = CONSUMER_POLL_FAST_MS;
 let inboundTickInFlight = false;
 let outboundTickInFlight = false;
 let dispatchDebugLogWarningShown = false;
+let activeQueue: MessageQueue | null = null;
 
 function debugDispatchLog(line: string): void {
   if (!DISPATCH_DEBUG_LOG_FILE) {
@@ -531,6 +532,7 @@ async function processInboundQueue(
             await sendToLarkDirect(client, msg.chat_id, text, {
               sessionKey: route.sessionKey,
               rootId,
+              queue,
             });
             debugDispatchLog(`✅ Sent ${info.kind} to Lark`);
             console.log(`[DISPATCH] ✅ Sent ${info.kind} to Lark`);
@@ -791,6 +793,7 @@ async function sendToLarkDirect(
   options?: {
     sessionKey?: string;
     rootId?: string;
+    queue?: MessageQueue | null;
   }
 ): Promise<{ skipped?: boolean; messageId?: string; error?: string }> {
   let lastError: string | undefined;
@@ -798,6 +801,13 @@ async function sendToLarkDirect(
   for (let attempt = 1; attempt <= SEND_DIRECT_MAX_RETRIES; attempt++) {
     const result = await sendToLarkOnce(client, chatId, content, options);
     if (result.skipped || result.messageId) {
+      if (result.messageId) {
+        try {
+          options?.queue?.recordSentMessage(chatId, content, result.messageId);
+        } catch (err) {
+          console.warn(`[LARK-SEND] Failed to persist direct send metadata: ${(err as Error).message}`);
+        }
+      }
       if (attempt > 1 && result.messageId) {
         console.log(`[LARK-SEND] Recovered on attempt ${attempt}/${SEND_DIRECT_MAX_RETRIES}`);
       }
@@ -965,6 +975,7 @@ export const larkPlugin = {
       const rootId = (replyToId ?? threadId)?.toString().trim();
       const result = await sendToLarkDirect(client, to, text, {
         rootId: rootId || undefined,
+        queue: activeQueue,
       });
       return { channel: 'lark' as const, ...result };
     },
@@ -1011,6 +1022,13 @@ export const larkPlugin = {
       const result = await client.sendCard(to, card, {
         rootId: rootId || undefined,
       });
+      if (result.success && result.messageId) {
+        try {
+          activeQueue?.recordSentMessage(to, text ?? '', result.messageId);
+        } catch (err) {
+          console.warn(`[LARK-SEND] Failed to persist media send metadata: ${(err as Error).message}`);
+        }
+      }
       return { channel: 'lark' as const, messageId: result.messageId, error: result.error };
     },
   },
@@ -1133,6 +1151,7 @@ export const larkPlugin = {
       // Initialize queue
       const queuePath = account.config.queueDbPath ?? undefined;
       const queue = getQueue(queuePath);
+      activeQueue = queue;
 
       // Build group allowlist
       const groupAllowlist = account.config.groups
@@ -1181,6 +1200,7 @@ export const larkPlugin = {
         webhook.stop();
         stopConsumers();
         closeQueue();
+        activeQueue = null;
         setAccountRuntime(account.accountId, {
           running: false,
           lastStopAt: Date.now(),

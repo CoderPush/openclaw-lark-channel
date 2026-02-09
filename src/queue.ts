@@ -372,6 +372,17 @@ export class MessageQueue {
   }
 
   /**
+   * Record a successfully sent direct message (non-queued path) in sent_messages.
+   * This keeps dedup behavior consistent between queued and direct delivery modes.
+   */
+  recordSentMessage(chatId: string, content: string, larkMessageId: string | null): void {
+    const now = Date.now();
+    const hash = this.hashContent(content);
+    this.stmtRecordSent.run(hash, chatId, larkMessageId, now);
+    console.log(`[QUEUE-OUT] 📝 Recorded direct send | chat=${chatId} | lark_id=${larkMessageId}`);
+  }
+
+  /**
    * Mark outbound message for retry (120 retries max with exponential backoff up to 120 min)
    * After max retries, mark as failed_permanent but KEEP in DB for manual review
    */
