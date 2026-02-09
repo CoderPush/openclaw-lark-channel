@@ -528,7 +528,7 @@ async function processInboundQueue(
             const rootId = payloadReplyToId || (isGroup ? (msg.thread_root_id ?? msg.message_id) : undefined);
 
             // Send to Lark
-            await sendToLark(client, msg.chat_id, text, {
+            await sendToLarkDirect(client, msg.chat_id, text, {
               sessionKey: route.sessionKey,
               rootId,
             });
@@ -604,7 +604,8 @@ async function processOutboundQueue(
     try {
       console.log(`[OUTBOUND] Processing #${msg.id} (${msg.queue_type}) | attempt ${msg.retries + 1}`);
 
-      const result = await sendToLark(client, msg.chat_id, msg.content, {
+      // Queue worker does single-attempt delivery; retry/backoff is handled by queue state.
+      const result = await sendToLarkOnce(client, msg.chat_id, msg.content, {
         sessionKey: msg.session_key,
       });
 
@@ -732,26 +733,20 @@ function stopConsumers(): void {
 
 // ─── Send to Lark ────────────────────────────────────────────────
 
-// Direct send retries: Also use 120 retries with exponential backoff up to 120 min
-// This is for the outbound.sendText calls from gateway's dispatch system
-const SEND_MAX_RETRIES = 120;
-const SEND_RETRY_BASE_MS = 1000;
-const SEND_RETRY_MAX_MS = 120 * 60 * 1000; // 120 minutes max backoff
+// Direct send retries are intentionally short to avoid blocking worker loops.
+// Long retry windows are delegated to queue-level scheduling.
+const SEND_DIRECT_MAX_RETRIES = 3;
+const SEND_DIRECT_RETRY_BASE_MS = 250;
 
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Calculate exponential backoff for direct sends
- * Caps at 120 minutes per Boyang's requirement
- */
-function calculateSendBackoff(attempt: number): number {
-  const backoff = SEND_RETRY_BASE_MS * Math.pow(2, Math.min(attempt - 1, 17));
-  return Math.min(backoff, SEND_RETRY_MAX_MS);
+function calculateDirectRetryBackoff(attempt: number): number {
+  return SEND_DIRECT_RETRY_BASE_MS * Math.pow(2, Math.max(0, attempt - 1));
 }
 
-async function sendToLarkWithRetry(
+async function sendToLarkOnce(
   client: LarkClient,
   chatId: string,
   content: string,
@@ -766,50 +761,59 @@ async function sendToLarkWithRetry(
     return { skipped: true };
   }
 
-  let lastError: string | undefined;
+  try {
+    let result: { success: boolean; messageId?: string; error?: string };
+    const rootId = options?.rootId?.trim();
 
-  for (let attempt = 1; attempt <= SEND_MAX_RETRIES; attempt++) {
-    try {
-      let result: { success: boolean; messageId?: string; error?: string };
-      const rootId = options?.rootId?.trim();
-
-      if (msgType === 'text') {
-        result = await client.sendText(chatId, content, { rootId });
-      } else {
-        // Interactive card
-        const card = buildCard({ text: content, sessionKey: options?.sessionKey });
-        result = await client.sendCard(chatId, card, { rootId });
-      }
-
-      if (result.success) {
-        console.log(`[LARK-SENT] ${msgType}: ${result.messageId}${attempt > 1 ? ` (attempt ${attempt})` : ''}`);
-        return { messageId: result.messageId };
-      }
-
-      lastError = result.error ?? 'Unknown error';
-      console.warn(`[LARK-SEND] Attempt ${attempt}/${SEND_MAX_RETRIES} failed: ${lastError}`);
-    } catch (err) {
-      lastError = (err as Error).message;
-      console.warn(`[LARK-SEND] Attempt ${attempt}/${SEND_MAX_RETRIES} threw: ${lastError}`);
+    if (msgType === 'text') {
+      result = await client.sendText(chatId, content, { rootId });
+    } else {
+      // Interactive card
+      const card = buildCard({ text: content, sessionKey: options?.sessionKey });
+      result = await client.sendCard(chatId, card, { rootId });
     }
 
-    // Exponential backoff before retry (cap at 120 minutes)
-    if (attempt < SEND_MAX_RETRIES) {
-      const backoffMs = calculateSendBackoff(attempt);
-      const backoffFormatted = backoffMs >= 60000 
-        ? `${Math.round(backoffMs / 60000)}m` 
-        : `${Math.round(backoffMs / 1000)}s`;
-      console.log(`[LARK-SEND] Next retry in ${backoffFormatted}`);
+    if (result.success) {
+      console.log(`[LARK-SENT] ${msgType}: ${result.messageId}`);
+      return { messageId: result.messageId };
+    }
+
+    return { error: result.error ?? 'Unknown error' };
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+}
+
+async function sendToLarkDirect(
+  client: LarkClient,
+  chatId: string,
+  content: string,
+  options?: {
+    sessionKey?: string;
+    rootId?: string;
+  }
+): Promise<{ skipped?: boolean; messageId?: string; error?: string }> {
+  let lastError: string | undefined;
+
+  for (let attempt = 1; attempt <= SEND_DIRECT_MAX_RETRIES; attempt++) {
+    const result = await sendToLarkOnce(client, chatId, content, options);
+    if (result.skipped || result.messageId) {
+      if (attempt > 1 && result.messageId) {
+        console.log(`[LARK-SEND] Recovered on attempt ${attempt}/${SEND_DIRECT_MAX_RETRIES}`);
+      }
+      return result;
+    }
+
+    lastError = result.error ?? 'Unknown error';
+    console.warn(`[LARK-SEND] Attempt ${attempt}/${SEND_DIRECT_MAX_RETRIES} failed: ${lastError}`);
+    if (attempt < SEND_DIRECT_MAX_RETRIES) {
+      const backoffMs = calculateDirectRetryBackoff(attempt);
       await sleep(backoffMs);
     }
   }
 
-  console.error(`[LARK-SEND] ❌ FAILED after ${SEND_MAX_RETRIES} attempts: ${lastError}`);
-  return { error: lastError };
+  return { error: lastError ?? 'Unknown error' };
 }
-
-// Alias for backward compatibility
-const sendToLark = sendToLarkWithRetry;
 
 // ─── Channel Plugin Interface ────────────────────────────────────
 
@@ -959,7 +963,7 @@ export const larkPlugin = {
     }) => {
       const client = getLarkClient();
       const rootId = (replyToId ?? threadId)?.toString().trim();
-      const result = await sendToLark(client, to, text, {
+      const result = await sendToLarkDirect(client, to, text, {
         rootId: rootId || undefined,
       });
       return { channel: 'lark' as const, ...result };
