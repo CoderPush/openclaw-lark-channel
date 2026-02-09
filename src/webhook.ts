@@ -107,6 +107,45 @@ export function shouldRespondInGroup(
   return false;
 }
 
+function extractTextFromParsedContent(parsed: unknown): string {
+  if (typeof parsed === 'string') {
+    return parsed.trim();
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return '';
+  }
+
+  const content = parsed as Record<string, unknown>;
+  const directText = [content.text, content.title, content.content].find(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0
+  );
+  if (directText) {
+    return directText.trim();
+  }
+
+  return '';
+}
+
+function parseInboundTextContent(rawContent?: string): string {
+  const raw = (rawContent ?? '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const extracted = extractTextFromParsedContent(parsed);
+    if (extracted) {
+      return extracted;
+    }
+  } catch {
+    // Fallback below handles non-standard text payloads.
+  }
+
+  return raw;
+}
+
 // ─── Webhook Handler ─────────────────────────────────────────────
 
 export type LarkDmPolicy = 'open' | 'pairing' | 'allowlist';
@@ -523,11 +562,30 @@ export class WebhookHandler {
   private async handleMessageEvent(event: LarkMessageEvent): Promise<void> {
     try {
       const message = event.message;
-      const chatId = message?.chat_id;
-      const messageId = message?.message_id;
+      const fallbackEvent = event as LarkMessageEvent & {
+        chat_id?: string;
+        open_chat_id?: string;
+        message_id?: string;
+        open_message_id?: string;
+      };
+      const chatId =
+        message?.chat_id?.trim() ||
+        fallbackEvent.chat_id?.trim() ||
+        fallbackEvent.open_chat_id?.trim();
+      const messageId =
+        message?.message_id?.trim() ||
+        fallbackEvent.message_id?.trim() ||
+        fallbackEvent.open_message_id?.trim();
       const messageType = message?.message_type;
 
       if (!chatId || !messageId) {
+        console.log(
+          `[WEBHOOK] Missing identifiers (chatId=${chatId ?? 'n/a'}, messageId=${messageId ?? 'n/a'})`
+        );
+        return;
+      }
+      if (!message) {
+        console.log(`[WEBHOOK] Missing message payload for ${messageId}`);
         return;
       }
 
@@ -537,12 +595,7 @@ export class WebhookHandler {
       // Parse based on message type
       switch (messageType) {
         case 'text': {
-          try {
-            const content = JSON.parse(message.content ?? '{}') as { text?: string };
-            text = (content.text ?? '').trim();
-          } catch {
-            return;
-          }
+          text = parseInboundTextContent(message.content);
           break;
         }
 
@@ -660,6 +713,11 @@ export class WebhookHandler {
           } catch (e) {
             console.error('[WEBHOOK] Audio parse error:', (e as Error).message);
           }
+          break;
+        }
+
+        case 'merge_forward': {
+          text = '[User forwarded messages]';
           break;
         }
 

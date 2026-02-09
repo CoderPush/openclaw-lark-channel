@@ -2,9 +2,15 @@
  * Webhook Handler Tests
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
-import { decryptPayload, shouldAllowDmByPolicy, shouldRespondInGroup, replaceMentionMarkers } from '../src/webhook.js';
+import {
+  decryptPayload,
+  shouldAllowDmByPolicy,
+  shouldRespondInGroup,
+  replaceMentionMarkers,
+  WebhookHandler,
+} from '../src/webhook.js';
 
 describe('Webhook', () => {
   describe('decryptPayload', () => {
@@ -127,6 +133,92 @@ describe('Webhook', () => {
       const allowlist = new Set(['oc_allowed']);
       expect(shouldAllowDmByPolicy({ policy: 'pairing', chatId: 'oc_allowed', dmAllowlist: allowlist })).toBe(true);
       expect(shouldAllowDmByPolicy({ policy: 'pairing', chatId: 'oc_blocked', dmAllowlist: allowlist })).toBe(false);
+    });
+  });
+
+  describe('handleMessageEvent', () => {
+    function createHarness() {
+      const queue = {
+        enqueueInbound: vi.fn().mockReturnValue({ enqueued: true }),
+        getStats: vi.fn().mockReturnValue({}),
+      };
+      const client = {
+        parsePostContent: vi.fn().mockReturnValue({ texts: [], imageKeys: [] }),
+        downloadImage: vi.fn(),
+        downloadFile: vi.fn(),
+        downloadAudio: vi.fn(),
+      };
+
+      const handler = new WebhookHandler({
+        port: 0,
+        queue: queue as any,
+        client: client as any,
+      });
+
+      return { handler, queue };
+    }
+
+    it('queues merge_forward messages instead of dropping them', async () => {
+      const { handler, queue } = createHarness();
+
+      await (handler as any).handleMessageEvent({
+        message: {
+          message_id: 'om_forward_1',
+          chat_id: 'oc_dm_1',
+          chat_type: 'p2p',
+          message_type: 'merge_forward',
+          content: '{"merged_message_id":"om_merged_1"}',
+        },
+      });
+
+      expect(queue.enqueueInbound).toHaveBeenCalledWith(expect.objectContaining({
+        messageId: 'om_forward_1',
+        chatId: 'oc_dm_1',
+        chatType: 'direct',
+        messageText: '[User forwarded messages]',
+      }));
+    });
+
+    it('queues text messages even when content is plain text instead of JSON', async () => {
+      const { handler, queue } = createHarness();
+
+      await (handler as any).handleMessageEvent({
+        message: {
+          message_id: 'om_text_1',
+          chat_id: 'oc_dm_2',
+          chat_type: 'p2p',
+          message_type: 'text',
+          content: 'plain reply after forward',
+        },
+      });
+
+      expect(queue.enqueueInbound).toHaveBeenCalledWith(expect.objectContaining({
+        messageId: 'om_text_1',
+        chatId: 'oc_dm_2',
+        chatType: 'direct',
+        messageText: 'plain reply after forward',
+      }));
+    });
+
+    it('falls back to event-level chat/message IDs when message IDs are missing', async () => {
+      const { handler, queue } = createHarness();
+
+      await (handler as any).handleMessageEvent({
+        open_chat_id: 'oc_dm_fallback',
+        open_message_id: 'om_fallback',
+        message: {
+          chat_type: 'p2p',
+          message_type: 'text',
+          content: '{"text":"reply after forward"}',
+        },
+      });
+
+      expect(queue.enqueueInbound).toHaveBeenCalledWith(expect.objectContaining({
+        messageId: 'om_fallback',
+        chatId: 'oc_dm_fallback',
+        chatType: 'direct',
+        messageText: 'reply after forward',
+      }));
     });
   });
 });
